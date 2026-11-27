@@ -399,6 +399,11 @@
     let selectedRangeDays = 1;
     let previousSensorState = {};
     let wakeEvents = [];
+    const WAKE_SETTINGS_KEY = 'indoorMonitorWakeSettings';
+    let wakeSettings = loadWakeSettings();
+    let wakeLateNotifiedDate = localStorage.getItem('indoorMonitorWakeLateNotifiedDate') || '';
+    let wakeRecords = [];
+    let wakeBaselinePromise = null;
     // field3（ガス・煙）は 0＝検知なし／1＝検知 の2値
     const GAS_THRESHOLD = 1;
     const isGasDetected = v => v !== null && v !== undefined && v !== '' && Number(v) >= GAS_THRESHOLD;
@@ -409,7 +414,7 @@
       const defaults = {
         fanMode: 'AUTO', fanOn: false,
         notifyDoor: true, notifyGas: true, notifyCall: true,
-        gasThreshold: GAS_THRESHOLD
+        notifyWakeLate: false, gasThreshold: GAS_THRESHOLD
       };
       try {
         const saved = JSON.parse(localStorage.getItem(DASHBOARD_KEY) || 'null');
@@ -423,6 +428,77 @@
         localStorage.setItem(DASHBOARD_KEY, JSON.stringify(dashboardSettings));
       } catch (error) {
         console.warn('ダッシュボード設定を保存できません:', error);
+      }
+    }
+
+    function loadWakeSettings() {
+      try {
+        const value = JSON.parse(localStorage.getItem(WAKE_SETTINGS_KEY) || '{}');
+        return { lateMinutes: Math.max(1, Math.min(720, Number(value.lateMinutes) || 60)) };
+      } catch (_) { return { lateMinutes: 60 }; }
+    }
+    function saveWakeSettings() {
+      try { localStorage.setItem(WAKE_SETTINGS_KEY, JSON.stringify(wakeSettings)); }
+      catch (error) { console.warn('起床通知設定を保存できません:', error); }
+    }
+
+    // ベッドセンサーが10分以上連続してONになった区間を睡眠とみなし、
+    // その後OFFになった時刻を起床時刻として記録する。
+    function buildWakeRecords(list) {
+      const ordered = [...list].filter(f => f.created_at && f.field5 !== null && f.field5 !== '')
+        .sort((a,b) => new Date(a.created_at) - new Date(b.created_at));
+      const records = [];
+      let occupiedSince = null, sleeping = false, lastTime = null;
+      for (const feed of ordered) {
+        const t = new Date(feed.created_at).getTime();
+        if (!Number.isFinite(t)) continue;
+        const occupied = Number(feed.field5) >= 1;
+        if (lastTime !== null && t - lastTime > 3 * 60 * 1000) {
+          occupiedSince = occupied ? t : null;
+          sleeping = false;
+        }
+        if (occupied) {
+          if (occupiedSince === null) occupiedSince = t;
+          if (t - occupiedSince >= 10 * 60 * 1000) sleeping = true;
+        } else {
+          if (sleeping) {
+            const d = new Date(t);
+            records.push({ time: t, date: `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}` });
+          }
+          occupiedSince = null;
+          sleeping = false;
+        }
+        lastTime = t;
+      }
+      return records;
+    }
+    function averageWakeMinutes(records) {
+      const today = localDateKey(new Date());
+      const cutoff = Date.now() - 7 * 86400000;
+      const recent = records.filter(r => r.date !== today && r.time >= cutoff);
+      if (!recent.length) return null;
+      return recent.reduce((sum,r) => { const d = new Date(r.time); return sum + d.getHours()*60 + d.getMinutes(); }, 0) / recent.length;
+    }
+    function localDateKey(d) {
+      return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    }
+    function checkWakeLateNotification() {
+      if (!dashboardSettings.notifyWakeLate || !wakeRecords.length) return;
+      const avg = averageWakeMinutes(wakeRecords);
+      if (avg === null) return;
+      const today = localDateKey(new Date());
+      if (wakeLateNotifiedDate === today) return;
+      const now = new Date();
+      const nowMinutes = now.getHours()*60 + now.getMinutes();
+      const expected = avg + wakeSettings.lateMinutes;
+      const todayWake = wakeRecords.some(r => r.date === today);
+      if (!todayWake && nowMinutes >= expected && Number(latestFeed?.field5) >= 1) {
+        const hh = String(Math.floor(avg/60)%24).padStart(2,'0');
+        const mm = String(Math.round(avg)%60).padStart(2,'0');
+        showBrowserNotification('起床が遅れています', `普段の起床時刻（${hh}:${mm}）から${wakeSettings.lateMinutes}分以上経過しています。`);
+        logEvent('通知', '起床遅れの通知を送信しました');
+        wakeLateNotifiedDate = today;
+        localStorage.setItem('indoorMonitorWakeLateNotifiedDate', today);
       }
     }
 
@@ -577,7 +653,7 @@
       if ($('fanSpeedDownBtn')) $('fanSpeedDownBtn').addEventListener('click', () => sendFanSpeedCommand('DOWN'));
 
       // 通知スイッチの保存
-      ['notifyDoor', 'notifyGas', 'notifyCall'].forEach(id => {
+      ['notifyDoor', 'notifyGas', 'notifyCall', 'notifyWakeLate'].forEach(id => {
         const input = $(id);
         if (!input) return;
         input.checked = Boolean(dashboardSettings[id]);
@@ -600,6 +676,17 @@
           }
         });
       });
+
+      const wakeLateInput = $('wakeLateMinutes');
+      if (wakeLateInput) {
+        wakeLateInput.value = String(wakeSettings.lateMinutes);
+        wakeLateInput.addEventListener('change', () => {
+          wakeSettings.lateMinutes = Math.max(1, Math.min(720, Number(wakeLateInput.value) || 60));
+          wakeLateInput.value = String(wakeSettings.lateMinutes);
+          saveWakeSettings();
+          syncPushPreferences().catch(error => console.warn('起床通知設定の同期エラー:', error));
+        });
+      }
 
       if ($('testNotificationBtn')) $('testNotificationBtn').addEventListener('click', async () => {
         const status = $('notificationStatus');
@@ -797,7 +884,7 @@
       }
       const response = await fetch(cfg.pushFunctionUrl, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'apikey': cfg.supabaseAnonKey, 'Authorization': `Bearer ${cfg.supabaseAnonKey}` },
-        body: JSON.stringify({ action: 'subscribe', subscription: subscription.toJSON(), preferences: { door: !!dashboardSettings.notifyDoor, gas: !!dashboardSettings.notifyGas, call: !!dashboardSettings.notifyCall }, gasThreshold: GAS_THRESHOLD })
+        body: JSON.stringify({ action: 'subscribe', subscription: subscription.toJSON(), preferences: { door: !!dashboardSettings.notifyDoor, gas: !!dashboardSettings.notifyGas, call: !!dashboardSettings.notifyCall, wakeLate: !!dashboardSettings.notifyWakeLate }, gasThreshold: GAS_THRESHOLD, wakeLateMinutes: wakeSettings.lateMinutes })
       });
       if (!response.ok) throw new Error('通知登録に失敗しました (HTTP ' + response.status + ')');
       return true;
@@ -810,7 +897,7 @@
       if (!subscription) return;
       const response = await fetch(cfg.pushFunctionUrl, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'apikey': cfg.supabaseAnonKey, 'Authorization': `Bearer ${cfg.supabaseAnonKey}` },
-        body: JSON.stringify({ action: 'subscribe', subscription: subscription.toJSON(), preferences: { door: !!dashboardSettings.notifyDoor, gas: !!dashboardSettings.notifyGas, call: !!dashboardSettings.notifyCall }, gasThreshold: GAS_THRESHOLD })
+        body: JSON.stringify({ action: 'subscribe', subscription: subscription.toJSON(), preferences: { door: !!dashboardSettings.notifyDoor, gas: !!dashboardSettings.notifyGas, call: !!dashboardSettings.notifyCall, wakeLate: !!dashboardSettings.notifyWakeLate }, gasThreshold: GAS_THRESHOLD, wakeLateMinutes: wakeSettings.lateMinutes })
       });
       if (!response.ok) throw new Error('通知設定の同期に失敗しました');
     }
@@ -1160,6 +1247,8 @@
         chartFeeds = list;
         chartFeedsDays = days;
         chartFeedsLoadedAt = Date.now();
+        wakeRecords = buildWakeRecords(chartFeeds);
+        checkWakeLateNotification();
       }).finally(() => { if (chartLoading && chartLoading.promise === promise) chartLoading = null; });
       chartLoading = { days, promise };
       return promise;
@@ -1180,6 +1269,16 @@
         out.push({ ...mid, [field]: avg });
       }
       return out;
+    }
+
+    async function loadWakeBaseline() {
+      if (wakeBaselinePromise) return wakeBaselinePromise;
+      wakeBaselinePromise = fetchRange(30).then(list => {
+        wakeRecords = buildWakeRecords(list);
+        checkWakeLateNotification();
+      }).catch(error => console.warn('起床時刻の基準データ取得エラー:', error))
+        .finally(() => { wakeBaselinePromise = null; });
+      return wakeBaselinePromise;
     }
 
     async function refresh() {
@@ -1213,6 +1312,13 @@
         }
         feeds = Array.isArray(history.feeds) ? history.feeds : [];
         processCallEvents(feeds);
+        const chartWakeRecords = buildWakeRecords(chartFeeds);
+        if (chartWakeRecords.length) {
+          const byTime = new Map(wakeRecords.map(r => [r.time, r]));
+          chartWakeRecords.forEach(r => byTime.set(r.time, r));
+          wakeRecords = [...byTime.values()].sort((a,b) => a.time-b.time);
+        }
+        checkWakeLateNotification();
 
         if (!latestFeed && feeds.length) {
           latestFeed = feeds[feeds.length - 1];
@@ -1280,6 +1386,73 @@
       return slots;
     }
 
+    function drawWakeChart(ctx, w, h, rangeStart, now) {
+      const records = buildWakeRecords(chartFeeds.length ? chartFeeds : feeds)
+        .filter(r => r.time >= rangeStart && r.time <= now);
+      const daily = selectedRangeDays > 1;
+      const color = '#149687';
+      if ($('legendSwatch')) $('legendSwatch').style.background = color;
+      if ($('legendText')) $('legendText').textContent = '起床した時刻（10分以上在床後の離床時刻）';
+      if ($('chartTitle')) $('chartTitle').textContent = '起床時刻の推移';
+      if ($('chartRange')) $('chartRange').textContent = records.length ? `${records.length}回の起床記録` : '起床記録なし';
+      if ($('chartEmpty')) {
+        $('chartEmpty').textContent = '10分以上在床した後に離床すると、起床時刻が記録されます。';
+        $('chartEmpty').style.display = records.length ? 'none' : 'grid';
+      }
+      if (!records.length) return;
+      const pad = { l: 54, r: 16, t: 20, b: 38 };
+      const cw = w - pad.l - pad.r, ch = h - pad.t - pad.b;
+      const yMin = 0, yMax = 24*60;
+      const yOf = m => pad.t + ch * (yMax-m)/(yMax-yMin);
+      ctx.font = '12px "Noto Sans JP", system-ui, sans-serif';
+      ctx.strokeStyle = '#eceef1'; ctx.fillStyle = '#6b6f76'; ctx.lineWidth = 1;
+      for (let hr=0; hr<=24; hr+=2) {
+        const y=yOf(hr*60);
+        ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(w-pad.r,y); ctx.stroke();
+        ctx.textAlign='right'; ctx.textBaseline='middle';
+        ctx.fillText(`${String(hr).padStart(2,'0')}:00`,pad.l-7,y);
+      }
+      const average = averageWakeMinutes(wakeRecords);
+      if (average !== null) {
+        const ay = yOf(average);
+        ctx.save();
+        ctx.strokeStyle = '#d6336c'; ctx.setLineDash([6, 5]); ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(pad.l, ay); ctx.lineTo(w-pad.r, ay); ctx.stroke();
+        ctx.restore();
+        ctx.fillStyle = '#d6336c'; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+        ctx.fillText(`過去7日平均 ${String(Math.floor(average/60)).padStart(2,'0')}:${String(Math.round(average)%60).padStart(2,'0')}`, pad.l+5, ay-4);
+      }
+      if (daily) {
+        const days=selectedRangeDays, first=new Date(startOfDay(now)); first.setDate(first.getDate()-(days-1));
+        const step=cw/days;
+        for(let i=0;i<days;i++){
+          const d=new Date(first); d.setDate(d.getDate()+i);
+          const x=pad.l+step*(i+.5);
+          ctx.strokeStyle='#f1f3f5';ctx.beginPath();ctx.moveTo(x,pad.t);ctx.lineTo(x,pad.t+ch);ctx.stroke();
+          ctx.fillStyle='#6b6f76';ctx.textAlign='center';ctx.textBaseline='top';
+          ctx.fillText(`${d.getMonth()+1}/${d.getDate()}`,x,pad.t+ch+9);
+        }
+        records.forEach(r=>{
+          const d=new Date(r.time), dayDiff=Math.floor((startOfDay(d)-first)/86400000);
+          if(dayDiff<0||dayDiff>=days)return;
+          const x=pad.l+step*(dayDiff+.5), minutes=d.getHours()*60+d.getMinutes();
+          ctx.beginPath();ctx.arc(x,yOf(minutes),5.5,0,Math.PI*2);ctx.fillStyle=color;ctx.fill();
+          ctx.fillStyle='#222';ctx.textAlign='center';ctx.textBaseline='bottom';
+          ctx.fillText(`${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`,x,yOf(minutes)-8);
+        });
+      } else {
+        const xOf=t=>pad.l+cw*(t-rangeStart)/(now-rangeStart);
+        records.forEach(r=>{
+          const d=new Date(r.time), minutes=d.getHours()*60+d.getMinutes(),x=xOf(r.time),y=yOf(minutes);
+          ctx.beginPath();ctx.arc(x,y,5.5,0,Math.PI*2);ctx.fillStyle=color;ctx.fill();
+          ctx.fillStyle='#222';ctx.textAlign='center';ctx.textBaseline='bottom';
+          ctx.fillText(`${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`,x,y-8);
+        });
+        ctx.fillStyle='#6b6f76';ctx.textAlign='center';ctx.textBaseline='top';
+        for(let hr=0;hr<24;hr+=3){const t=new Date(rangeStart);t.setHours(hr,0,0,0);if(t.getTime()<rangeStart)t.setDate(t.getDate()+1);if(t.getTime()>now)continue;const x=xOf(t.getTime());ctx.fillText(`${hr}時`,x,pad.t+ch+9);}
+      }
+    }
+
     function drawChart() {
       const canvas = $('historyChart');
       if (!canvas) return;
@@ -1312,6 +1485,11 @@
         f.created_at && new Date(f.created_at).getTime() >= rangeStart
       );
       const totalCount = filtered.length;
+
+      if (String(selectedField) === '4') {
+        drawWakeChart(ctx, w, h, rangeStart, now);
+        return;
+      }
 
       // 描画する点 {t: 時刻(ms), v: 値}。v=null は欠測（線を切る）
       // 温度・湿度は1日の平均、ガスは「その日に1回でも検知したか」（最大値）
@@ -1539,6 +1717,7 @@
     setupDashboardFeatures();
 
     refresh();
+    loadWakeBaseline();
     refreshLatestAudio();
 
     const refreshInterval = Math.max(30000, Number(cfg.refreshMs) || 30000);
