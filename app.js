@@ -442,7 +442,7 @@
       catch (error) { console.warn('起床通知設定を保存できません:', error); }
     }
 
-    // ベッドセンサーが10分以上連続してONになった区間を睡眠とみなし、
+    // ベッドセンサーが3時間以上連続してONになった区間を睡眠とみなし、
     // その後OFFになった時刻を起床時刻として記録する。
     function buildWakeRecords(list) {
       const ordered = [...list].filter(f => f.created_at && f.field5 !== null && f.field5 !== '')
@@ -459,7 +459,7 @@
         }
         if (occupied) {
           if (occupiedSince === null) occupiedSince = t;
-          if (t - occupiedSince >= 10 * 60 * 1000) sleeping = true;
+          if (t - occupiedSince >= 3 * 60 * 60 * 1000) sleeping = true;
         } else {
           if (sleeping) {
             const d = new Date(t);
@@ -1392,15 +1392,15 @@
       const daily = selectedRangeDays > 1;
       const color = '#149687';
       if ($('legendSwatch')) $('legendSwatch').style.background = color;
-      if ($('legendText')) $('legendText').textContent = '起床した時刻（10分以上在床後の離床時刻）';
+      if ($('legendText')) $('legendText').textContent = '起床した時刻（3時間以上在床後の離床時刻）';
       if ($('chartTitle')) $('chartTitle').textContent = '起床時刻の推移';
       if ($('chartRange')) $('chartRange').textContent = records.length ? `${records.length}回の起床記録` : '起床記録なし';
       if ($('chartEmpty')) {
-        $('chartEmpty').textContent = '10分以上在床した後に離床すると、起床時刻が記録されます。';
+        $('chartEmpty').textContent = '3時間以上在床した後に離床すると、起床時刻が記録されます。';
         $('chartEmpty').style.display = records.length ? 'none' : 'grid';
       }
       if (!records.length) return;
-      const pad = { l: 54, r: 16, t: 20, b: 62 };
+      const pad = { l: 54, r: 16, t: 20, b: 38 };
       const cw = w - pad.l - pad.r, ch = h - pad.t - pad.b;
       const yMin = 0, yMax = 24*60;
       const yOf = m => pad.t + ch * (yMax-m)/(yMax-yMin);
@@ -1429,15 +1429,8 @@
           const d=new Date(first); d.setDate(d.getDate()+i);
           const x=pad.l+step*(i+.5);
           ctx.strokeStyle='#f1f3f5';ctx.beginPath();ctx.moveTo(x,pad.t);ctx.lineTo(x,pad.t+ch);ctx.stroke();
-          // 日付ラベルを縦向きにして、30日表示でも重ならないようにする
-          ctx.save();
-          ctx.translate(x, pad.t + ch + 34);
-          ctx.rotate(-Math.PI / 2);
-          ctx.fillStyle='#6b6f76';
-          ctx.textAlign='center';
-          ctx.textBaseline='middle';
-          ctx.fillText(`${d.getMonth()+1}/${d.getDate()}`, 0, 0);
-          ctx.restore();
+          ctx.fillStyle='#6b6f76';ctx.textAlign='center';ctx.textBaseline='top';
+          ctx.fillText(`${d.getMonth()+1}/${d.getDate()}`,x,pad.t+ch+9);
         }
         records.forEach(r=>{
           const d=new Date(r.time), dayDiff=Math.floor((startOfDay(d)-first)/86400000);
