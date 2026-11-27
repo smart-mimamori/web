@@ -1400,7 +1400,7 @@
         $('chartEmpty').style.display = records.length ? 'none' : 'grid';
       }
       if (!records.length) return;
-      const pad = { l: 54, r: 16, t: 20, b: 38 };
+      const pad = { l: 54, r: 16, t: 20, b: 62 };
       const cw = w - pad.l - pad.r, ch = h - pad.t - pad.b;
       const yMin = 0, yMax = 24*60;
       const yOf = m => pad.t + ch * (yMax-m)/(yMax-yMin);
@@ -1429,8 +1429,15 @@
           const d=new Date(first); d.setDate(d.getDate()+i);
           const x=pad.l+step*(i+.5);
           ctx.strokeStyle='#f1f3f5';ctx.beginPath();ctx.moveTo(x,pad.t);ctx.lineTo(x,pad.t+ch);ctx.stroke();
-          ctx.fillStyle='#6b6f76';ctx.textAlign='center';ctx.textBaseline='top';
-          ctx.fillText(`${d.getMonth()+1}/${d.getDate()}`,x,pad.t+ch+9);
+          // 日付ラベルを縦向きにして、30日表示でも重ならないようにする
+          ctx.save();
+          ctx.translate(x, pad.t + ch + 34);
+          ctx.rotate(-Math.PI / 2);
+          ctx.fillStyle='#6b6f76';
+          ctx.textAlign='center';
+          ctx.textBaseline='middle';
+          ctx.fillText(`${d.getMonth()+1}/${d.getDate()}`, 0, 0);
+          ctx.restore();
         }
         records.forEach(r=>{
           const d=new Date(r.time), dayDiff=Math.floor((startOfDay(d)-first)/86400000);
