@@ -151,6 +151,12 @@
           <label class="toggle"><span class="tt">ドア開閉の通知<span class="d">ドア状態が変わったとき</span></span><input class="switch" id="notifyDoor" type="checkbox" aria-label="ドア開閉の通知"></label>
           <label class="toggle"><span class="tt">ガス・煙の通知<span class="d">しきい値を超えたとき（オン推奨）</span></span><input class="switch" id="notifyGas" type="checkbox" aria-label="ガス・煙の通知"></label>
           <label class="toggle"><span class="tt">呼び出しの通知<span class="d">呼び出しボタンが押されたとき（オン推奨）</span></span><input class="switch" id="notifyCall" type="checkbox" aria-label="呼び出しの通知"></label>
+          <label class="toggle"><span class="tt">起床遅れの通知<span class="d">普段の起床時刻から指定時間を過ぎても起床しない場合</span></span><input class="switch" id="notifyWakeLate" type="checkbox" aria-label="起床遅れの通知"></label>
+          <div class="wake-notify-setting">
+            <label for="wakeLateMinutes">普段の起床時刻から通知するまで</label>
+            <div><input id="wakeLateMinutes" type="number" min="1" max="720" step="5" value="60"> 分</div>
+            <p class="note">起床時刻は、ベッドセンサーが10分以上連続して反応した後、離床した時刻として記録します。</p>
+          </div>
           <div class="sub">
             <p id="notificationStatus" class="note" role="status" style="margin:0 0 12px">通知設定はこのブラウザに保存されます。</p>
             <button type="button" id="testNotificationBtn" class="btn teal mini">テスト通知を送る</button>
@@ -174,6 +180,7 @@
               <button type="button" class="tab active" data-field="1">温度</button>
               <button type="button" class="tab" data-field="2">湿度</button>
               <button type="button" class="tab" data-field="3">ガス値</button>
+              <button type="button" class="tab" data-field="4">起床時刻</button>
             </div>
             <div class="legend"><span><i id="legendSwatch"></i><span id="legendText">室温（℃）</span></span><span id="chartRange">直近の記録</span></div>
           </div>
